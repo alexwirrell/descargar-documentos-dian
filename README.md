@@ -32,8 +32,9 @@ Todo el procesamiento ocurre localmente en su navegador. Ver [Política de Priva
 
 1. Descargue o clone este repositorio:
    ```bash
-   git clone https://github.com/<usuario>/<repositorio>.git
+   git clone https://github.com/alexwirrell/descargar-documentos-dian.git
    ```
+   O use **Code → Download ZIP** en [github.com/alexwirrell/descargar-documentos-dian](https://github.com/alexwirrell/descargar-documentos-dian) y descomprímalo.
 2. Abra `chrome://extensions` en Chrome (o Edge / Brave).
 3. Active el **Modo de desarrollador** (esquina superior derecha).
 4. Pulse **Cargar descomprimida** y seleccione la carpeta del proyecto.
