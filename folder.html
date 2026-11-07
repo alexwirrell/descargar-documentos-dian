@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Carpeta de destino - Descargar documentos DIAN</title>
+  <style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; padding: 18px; margin: 0; background: #f8f9fa; font-size: 13px; }
+    h2 { font-size: 16px; margin: 0 0 12px; color: #0056b3; }
+    .current { background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 8px; margin-bottom: 12px; }
+    .current b { word-break: break-all; }
+    button { width: 100%; padding: 10px; background: #0056b3; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 8px; }
+    button.secondary { background: #198754; }
+    #status { min-height: 18px; margin-top: 6px; }
+    .ok { color: #198754; } .err { color: #dc3545; }
+    .note { color: #555; font-size: 11px; margin-top: 10px; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <h2>Carpeta donde se guardarán los PDF</h2>
+  <div class="current">Carpeta actual: <b id="folderName">(ninguna)</b><br>Permiso: <span id="perm">-</span></div>
+
+  <button id="btnPick">Elegir carpeta…</button>
+  <button id="btnAuth" class="secondary" hidden>Autorizar acceso a esta carpeta</button>
+
+  <div id="status"></div>
+
+  <div class="note">
+    Al autorizar, si Chrome muestra la opción <b>“Permitir en cada visita”</b>, elíjala: así no tendrá
+    que volver a autorizar la carpeta cada vez que abra el navegador.<br>
+    Si no aparece esa opción, deje esta ventana abierta (puede minimizarla) mientras se descargan los PDF.
+  </div>
+
+  <script src="lib/idb.js"></script>
+  <script src="folder.js"></script>
+</body>
+</html>

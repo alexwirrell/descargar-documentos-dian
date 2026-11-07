@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Descargar documentos DIAN",
+  "version": "1.2",
+  "description": "Descarga masiva de facturas DIAN: quita la contraseña (NIT), guarda en la carpeta elegida y genera un Excel con los datos",
+  "permissions": [
+    "downloads",
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://catalogo-vpfe.dian.gov.co/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://catalogo-vpfe.dian.gov.co/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  }
+}
