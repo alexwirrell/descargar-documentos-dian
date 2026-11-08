@@ -7,7 +7,6 @@
     "downloads",
     "storage",
     "unlimitedStorage",
-    "tabs",
     "offscreen"
   ],
   "host_permissions": [
