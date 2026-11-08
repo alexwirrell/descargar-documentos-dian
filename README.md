@@ -30,8 +30,6 @@ Todo el procesamiento ocurre localmente en su navegador. Ver [Política de Priva
 
 ## Instalación
 
-> La extensión no está publicada en Chrome Web Store; se instala en modo desarrollador.
-
 1. Descargue o clone este repositorio:
    ```bash
    git clone https://github.com/alexwirrell/descargar-documentos-dian.git
