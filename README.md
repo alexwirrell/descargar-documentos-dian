@@ -1,6 +1,8 @@
 # Descargar documentos DIAN
 
-Extensión para Google Chrome (Manifest V3) que automatiza la consulta y descarga masiva de facturas electrónicas desde el portal público de la DIAN ([catalogo-vpfe.dian.gov.co](https://catalogo-vpfe.dian.gov.co/User/SearchDocument)) a partir de una lista de CUFEs.
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Descargar%20documentos%20DIAN-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/descargar-documentos-dian/iokiadeklaegllnamjcloddejbjhffjm?hl=es)
+ 
+Extensión para Google Chrome (Manifest V3), [disponible en Chrome Web Store](https://chromewebstore.google.com/detail/descargar-documentos-dian/iokiadeklaegllnamjcloddejbjhffjm?hl=es), que automatiza la consulta y descarga masiva de facturas electrónicas desde el portal público de la DIAN ([catalogo-vpfe.dian.gov.co](https://catalogo-vpfe.dian.gov.co/User/SearchDocument)) a partir de una lista de CUFEs.
 
 Por cada documento, la extensión:
 
