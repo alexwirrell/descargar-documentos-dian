@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Descargar documentos DIAN",
-  "version": "1.2",
+  "version": "1.4",
   "description": "Descarga masiva de facturas DIAN: quita la contraseña (NIT), guarda en la carpeta elegida y genera un Excel con los datos",
   "permissions": [
     "downloads",
     "storage",
     "unlimitedStorage",
+    "tabs",
     "offscreen"
   ],
   "host_permissions": [
