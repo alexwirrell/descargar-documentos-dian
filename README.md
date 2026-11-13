@@ -1,7 +1,7 @@
 # Descargar documentos DIAN
 
 [![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Descargar%20documentos%20DIAN-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/descargar-documentos-dian/iokiadeklaegllnamjcloddejbjhffjm?hl=es)
- 
+
 Extensión para Google Chrome (Manifest V3), [disponible en Chrome Web Store](https://chromewebstore.google.com/detail/descargar-documentos-dian/iokiadeklaegllnamjcloddejbjhffjm?hl=es), que automatiza la consulta y descarga masiva de facturas electrónicas desde el portal público de la DIAN ([catalogo-vpfe.dian.gov.co](https://catalogo-vpfe.dian.gov.co/User/SearchDocument)) a partir de una lista de CUFEs.
 
 Por cada documento, la extensión:
@@ -10,7 +10,7 @@ Por cada documento, la extensión:
 2. Descarga la representación gráfica en PDF.
 3. **Quita la contraseña** del PDF (la DIAN lo entrega protegido con el NIT).
 4. Lo guarda en la **carpeta que usted elija**, con el CUFE como nombre de archivo.
-5. **Lee el contenido del PDF** y, al terminar, genera un **Excel (.xlsx)** con los datos de todas las facturas.
+5. **Lee el contenido del PDF** y, al terminar, genera un **Excel (.xlsx)** con los datos de todos los documentos.
 
 Todo el procesamiento ocurre localmente en su navegador. Ver [Política de Privacidad](PRIVACY_POLICY.md).
 
@@ -21,14 +21,28 @@ Todo el procesamiento ocurre localmente en su navegador. Ver [Política de Priva
 - **Descarga masiva:** pegue cientos de CUFEs (uno por línea) y la extensión los procesa en orden. Los duplicados se eliminan automáticamente.
 - **Carpeta de destino a elección:** se elige con el selector de carpetas del sistema (File System Access API), no solo dentro de *Descargas*.
 - **PDF sin contraseña:** se descifran con [qpdf](https://github.com/qpdf/qpdf) compilado a WebAssembly, usando el NIT ingresado. Si el NIT se escribe con dígito de verificación (`900123456-7`), también se prueba sin él.
+- **Facturas electrónicas y documentos soporte:** reconoce la representación gráfica de la **factura electrónica de venta** y la del **documento soporte en adquisiciones efectuadas a no obligados a facturar** (CUDS).
 - **Resumen en Excel** con dos hojas:
-  - **Facturas:** una fila por CUFE con estado, número, fechas, forma y medio de pago, datos completos del emisor y del adquiriente, subtotal, descuentos, IVA, INC, total, retenciones, fecha de validación DIAN, autorización y numeración.
-  - **Detalle:** una fila por producto o servicio con código, descripción, unidad, cantidad, precio unitario, descuento, IVA, INC y valor total de la línea.
+  - **Facturas:** una fila por CUFE/CUDS con estado, tipo de documento, número, fechas, forma y medio de pago, datos completos del **vendedor** y del **comprador**, subtotal, base gravable, descuentos, IVA, INC, total, retenciones, fecha de validación DIAN, autorización y numeración.
+  - **Detalle:** una fila por producto o servicio con código, descripción, unidad, cantidad, precio unitario, descuento, IVA, INC, valor total de la línea y, en documentos soporte, forma de generación y fecha de compra.
+  - Se usan los términos *vendedor* y *comprador* porque sirven para ambos documentos: en la factura el vendedor es quien la emite; en el documento soporte la emite el comprador.
 - **Controles de calidad:** la columna *Observaciones* avisa si la suma de las líneas no coincide con el subtotal, si el CUFE del PDF no corresponde al solicitado, o si falta información.
 - **Robusta ante errores:** reintenta búsquedas fallidas (máximo 3 veces), continúa con el siguiente CUFE si uno falla, y registra todo en una consola de logs dentro del popup.
 - **Captcha:** la extensión espera a que el captcha de Cloudflare Turnstile se resuelva (automáticamente o por usted) antes de enviar cada consulta. No lo evade.
 
 ## Instalación
+
+### Desde Chrome Web Store (recomendado)
+
+1. Abra la página de la extensión en [Chrome Web Store](https://chromewebstore.google.com/detail/descargar-documentos-dian/iokiadeklaegllnamjcloddejbjhffjm?hl=es).
+2. Pulse **Agregar a Chrome** y confirme con **Agregar extensión**.
+3. Ancle la extensión en la barra de herramientas (icono de rompecabezas → chincheta) para tenerla a mano.
+
+Instalada así, Chrome la actualiza automáticamente cuando se publica una nueva versión. También funciona en Microsoft Edge y Brave, que permiten instalar extensiones de Chrome Web Store.
+
+### Desde el código fuente (modo desarrollador)
+
+Para probar cambios o usar la versión más reciente del repositorio antes de que se publique en la tienda:
 
 1. Descargue o clone este repositorio:
    ```bash
@@ -96,16 +110,16 @@ Si se pierde el permiso sobre la carpeta durante el proceso, los archivos no se 
 
 La DIAN genera las representaciones gráficas con una plantilla estándar (“Solución Gratuita DIAN”) cuyo texto es extraíble, sin necesidad de OCR. El lector (`lib/invoice-parser.mjs`) usa pdf.js para obtener cada fragmento de texto con su posición (x, y) y luego:
 
-- Reconstruye las líneas y lee los pares **“Etiqueta: valor”** por sección (Datos del Documento, Emisor, Adquiriente). Usa las etiquetas y no coordenadas fijas, así que tolera nombres y direcciones de cualquier longitud.
-- Toma los **totales** de la columna de moneda local (COP).
+- Lee los pares **“Etiqueta: valor”** por sección (Datos del documento, Emisor/Vendedor, Adquiriente). Busca el valor en una franja alrededor de la etiqueta, por lo que admite etiquetas y valores partidos en varios renglones. Usa las etiquetas y no coordenadas fijas, así que tolera nombres y direcciones de cualquier longitud.
+- Reconoce los nombres de los totales en ambas plantillas (p. ej. *Total factura* / *Total documento*, *Rete fuente* / *Rte fuente*) y los toma de la columna de moneda local (COP).
 - Reconstruye la **tabla de productos**: las columnas salen de los encabezados y las filas se anclan en la columna *Nro.*. Une las descripciones que ocupan varios renglones.
 - Convierte los números en formato colombiano (`1.234.567,89`) a valores numéricos. En el Excel, fechas y montos quedan como fechas y números reales.
 
 ## Limitaciones conocidas
 
 - **Captcha:** si Cloudflare pide interacción, hay que resolverlo manualmente en la pestaña de trabajo.
-- **Descripciones largas:** la DIAN corta las descripciones carácter por carácter. Cuando una línea llena todo el ancho de la columna no se puede saber si el corte coincidió con un espacio; se asume que no (lo más frecuente), por lo que en casos aislados dos palabras pueden quedar unidas.
-- **Otros formatos:** el lector está pensado para la representación gráfica estándar de la DIAN. PDF con plantillas propias de un proveedor tecnológico pueden quedar con campos vacíos, y en ese caso la columna *Observaciones* lo señala.
+- **Descripciones largas (facturas):** en la factura, la DIAN corta las descripciones carácter por carácter. Cuando una línea llena todo el ancho de la columna no se puede saber si el corte coincidió con un espacio; se asume que no (lo más frecuente), por lo que en casos aislados dos palabras pueden quedar unidas.
+- **Otros formatos:** el lector está pensado para las representaciones gráficas estándar de la DIAN (factura electrónica y documento soporte). PDF con plantillas propias de un proveedor tecnológico pueden quedar con campos vacíos, y en ese caso la columna *Observaciones* lo señala.
 - **Permiso de carpeta:** Chrome puede pedir reautorizar la carpeta tras reiniciar el navegador, salvo que se haya elegido “Permitir en cada visita”.
 - Si la DIAN cambia la estructura de su portal, puede ser necesario actualizar los selectores de `content.js`.
 
