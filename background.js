@@ -80,7 +80,7 @@ async function savePdf({ dataUrl }) {
   const h = ex.header || {};
   await addRecord({ cufe: currentCufe, archivo: res.filename, estado: 'OK', header: h, products: ex.products || [] });
   const total = typeof h.total_factura === 'number' ? h.total_factura.toLocaleString('es-CO', { minimumFractionDigits: 2 }) : '?';
-  await appendLog(`Datos leídos: ${h.numero || '(sin número)'} · ${h.adq_nombre || h.emisor_razon_social || ''} · ` +
+  await appendLog(`Datos leídos: ${h.numero || '(sin número)'} · ${h.emisor_razon_social || '?'} → ${h.adq_nombre || '?'} · ` +
     `${(ex.products || []).length} línea(s) · total ${total}${h.observaciones ? ` · OJO: ${h.observaciones}` : ''}`);
 
   return { ok: true, decrypted: res.decrypted };
