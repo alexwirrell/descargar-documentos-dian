@@ -1,30 +1,65 @@
 document.addEventListener('DOMContentLoaded', async () => {
-  const nitInput = document.getElementById('nit');
-  const cufesInput = document.getElementById('cufes');
-  const cufeCount = document.getElementById('cufeCount');
-  const folderBox = document.getElementById('folderBox');
-  const btnFolder = document.getElementById('btnFolder');
-  const btnStart = document.getElementById('btnStart');
-  const btnStop = document.getElementById('btnStop');
-  const btnClearLogs = document.getElementById('btnClearLogs');
-  const logsDiv = document.getElementById('logs');
-  const msg = document.getElementById('msg');
+  const $ = (id) => document.getElementById(id);
+  const nitInput = $('nit');
+  const cufesInput = $('cufes');
+  const cufeCount = $('cufeCount');
+  const folderBox = $('folderBox');
+  const btnFolder = $('btnFolder');
+  const btnStart = $('btnStart');
+  const btnStop = $('btnStop');
+  const btnResume = $('btnResume');
+  const btnClearLogs = $('btnClearLogs');
+  const btnCopyLogs = $('btnCopyLogs');
+  const btnReport = $('btnReport');
+  const renameFiles = $('renameFiles');
+  const pauseSeconds = $('pauseSeconds');
+  const progress = $('progress');
+  const logsDiv = $('logs');
+  const msg = $('msg');
+
+  let currentLogs = [];
 
   function renderLogs(logsList) {
-    logsDiv.innerHTML = '';
-    (logsList || []).forEach((text) => {
+    currentLogs = logsList || [];
+    // Rendimiento: un solo cambio en el DOM aunque haya cientos de líneas
+    const frag = document.createDocumentFragment();
+    currentLogs.forEach((text) => {
       const entry = document.createElement('div');
       entry.className = 'log-entry';
       entry.textContent = text;
-      logsDiv.appendChild(entry);
+      frag.appendChild(entry);
     });
+    logsDiv.replaceChildren(frag);
     logsDiv.scrollTop = logsDiv.scrollHeight;
   }
 
-  function setProcessing(on) {
+  const STATUS_TEXT = {
+    running: 'En curso',
+    waiting_block: '⏳ Esperando por bloqueo del portal',
+    paused: '⛔ Pausado por bloqueo del portal',
+    stopped: 'Detenido',
+    done: 'Completado'
+  };
+
+  async function renderState() {
+    const d = await chrome.storage.local.get(['isProcessing', 'cufesQueue', 'currentIndex', 'stats', 'runStatus', 'blockedUntil']);
+    const on = Boolean(d.isProcessing);
+    const queue = d.cufesQueue || [];
+    const idx = d.currentIndex || 0;
+    const pending = queue.length > 0 && idx < queue.length;
+
     btnStart.disabled = on;
     btnStart.textContent = on ? 'Procesando...' : 'Iniciar Descargas';
     btnStop.disabled = !on;
+    btnResume.hidden = on || !pending || d.runStatus === 'done';
+    btnResume.textContent = `▶ Reanudar desde el CUFE ${idx + 1} de ${queue.length}`;
+
+    if (!queue.length) { progress.textContent = ''; return; }
+    const s = d.stats || { ok: 0, failed: 0 };
+    const failed = Array.isArray(s.failed) ? s.failed.length : (s.failed || 0);
+    let text = `${STATUS_TEXT[d.runStatus] || ''} · ${Math.min(idx, queue.length)}/${queue.length} procesados · ✔ ${s.ok || 0} · ✖ ${failed}`;
+    if (d.runStatus === 'waiting_block' && d.blockedUntil) text += ` · reintento a las ${new Date(d.blockedUntil).toLocaleTimeString()}`;
+    progress.textContent = text;
   }
 
   function parseCufes() {
@@ -64,36 +99,83 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Comprueba la carpeta antes de iniciar o reanudar
+  async function folderReady() {
+    const { handle, state } = await getFolderStatus();
+    if (!handle) {
+      msg.textContent = 'Primero seleccione la carpeta de destino.';
+      openFolderWindow(false);
+      return null;
+    }
+    if (state !== 'granted') {
+      msg.textContent = 'Chrome pide volver a autorizar la carpeta. Autorícela y pulse de nuevo.';
+      openFolderWindow(true);
+      return null;
+    }
+    return handle;
+  }
+
   // ---- Estado inicial ----
-  const saved = await chrome.storage.local.get(['nit', 'logsHistory', 'isProcessing', 'cufesQueue']);
+  const saved = await chrome.storage.local.get(['nit', 'logsHistory', 'isProcessing', 'cufesQueue', 'renameFiles', 'pauseSeconds']);
   if (saved.nit) nitInput.value = saved.nit;
   if (saved.cufesQueue && !saved.isProcessing) cufesInput.value = saved.cufesQueue.join('\n');
+  renameFiles.checked = saved.renameFiles !== false;
+  pauseSeconds.value = saved.pauseSeconds || 0;
   renderLogs(saved.logsHistory || []);
-  setProcessing(Boolean(saved.isProcessing));
   updateCount();
   renderFolder();
+  renderState();
 
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.logsHistory) renderLogs(changes.logsHistory.newValue);
-    if (changes.isProcessing) setProcessing(Boolean(changes.isProcessing.newValue));
+    if (changes.isProcessing || changes.currentIndex || changes.stats || changes.runStatus || changes.cufesQueue) renderState();
     if (changes.folderLabel) renderFolder();
   });
 
   cufesInput.addEventListener('input', updateCount);
   nitInput.addEventListener('change', () => chrome.storage.local.set({ nit: nitInput.value.trim() }));
+  renameFiles.addEventListener('change', () => chrome.storage.local.set({ renameFiles: renameFiles.checked }));
+  pauseSeconds.addEventListener('change', () => {
+    const v = Math.max(0, Math.min(600, parseInt(pauseSeconds.value, 10) || 0));
+    pauseSeconds.value = v;
+    chrome.storage.local.set({ pauseSeconds: v });
+  });
   btnFolder.addEventListener('click', () => openFolderWindow(false));
 
   btnClearLogs.addEventListener('click', async () => {
     await chrome.storage.local.set({ logsHistory: [] });
-    logsDiv.innerHTML = '';
+    logsDiv.replaceChildren();
+  });
+
+  btnCopyLogs.addEventListener('click', async () => {
+    const text = currentLogs.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // Respaldo si el portapapeles moderno no está disponible
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    const old = btnCopyLogs.textContent;
+    btnCopyLogs.textContent = `✔ Copiado (${currentLogs.length})`;
+    setTimeout(() => { btnCopyLogs.textContent = old; }, 1500);
   });
 
   btnStop.addEventListener('click', () => chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }));
 
-  const btnReport = document.getElementById('btnReport');
   btnReport.addEventListener('click', () => {
     msg.textContent = '';
     chrome.runtime.sendMessage({ action: 'BUILD_REPORT' });
+  });
+
+  btnResume.addEventListener('click', async () => {
+    msg.textContent = '';
+    if (!(await folderReady())) return;
+    chrome.runtime.sendMessage({ action: 'RESUME_PROCESS' });
   });
 
   btnStart.addEventListener('click', async () => {
@@ -104,24 +186,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!nit) { msg.textContent = 'Debe ingresar el NIT.'; return; }
     if (cufes.length === 0) { msg.textContent = 'Ingrese al menos un CUFE.'; return; }
 
-    const { handle, state } = await getFolderStatus();
-    if (!handle) {
-      msg.textContent = 'Primero seleccione la carpeta de destino.';
-      openFolderWindow(false);
-      return;
-    }
-    if (state !== 'granted') {
-      msg.textContent = 'Chrome pide volver a autorizar la carpeta. Autorícela y pulse Iniciar de nuevo.';
-      openFolderWindow(true);
-      return;
-    }
+    const handle = await folderReady();
+    if (!handle) return;
 
-    setProcessing(true);
+    btnStart.disabled = true;
     await chrome.storage.local.set({
       nit,
       cufesQueue: cufes,
       currentIndex: 0,
       isProcessing: true,
+      renameFiles: renameFiles.checked,
+      pauseSeconds: Math.max(0, parseInt(pauseSeconds.value, 10) || 0),
       logsHistory: [`[${new Date().toLocaleTimeString()}] Iniciando proceso para ${cufes.length} CUFE(s). Carpeta: ${handle.name}`]
     });
     chrome.runtime.sendMessage({ action: 'START_PROCESS' });
