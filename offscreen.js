@@ -5,10 +5,17 @@
 
 // Este archivo se carga como módulo ES (ver offscreen.html).
 import * as pdfjsLib from './lib/pdfjs/pdf.min.mjs';
-import { parseInvoicePdf } from './lib/invoice-parser.mjs';
+import { parseInvoicePdf, buildDocFileName } from './lib/invoice-parser.mjs';
 import { buildReport } from './lib/report.mjs';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdfjs/pdf.worker.min.mjs');
+
+// Rendimiento: un solo worker de pdf.js para todos los documentos (en vez de crear uno por PDF)
+let pdfWorker = null;
+function getPdfWorker() {
+  if (!pdfWorker || pdfWorker.destroyed) pdfWorker = new pdfjsLib.PDFWorker({ name: 'dian-parser' });
+  return pdfWorker;
+}
 
 let qpdfPromise = null;
 
@@ -36,9 +43,14 @@ function passwordCandidates(nit) {
 }
 
 function looksEncrypted(bytes) {
-  // Heurística: buscar "/Encrypt" en los últimos 64 KB (trailer / diccionario de cifrado)
-  const tail = bytes.subarray(Math.max(0, bytes.length - 65536));
-  return new TextDecoder('latin1').decode(tail).includes('/Encrypt');
+  // Busca "/Encrypt" en todo el archivo (el trailer puede estar al inicio en PDF linealizados)
+  const needle = [0x2f, 0x45, 0x6e, 0x63, 0x72, 0x79, 0x70, 0x74]; // "/Encrypt"
+  outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
+    if (bytes[i] !== 0x2f) continue;
+    for (let j = 1; j < needle.length; j++) if (bytes[i + j] !== needle[j]) continue outer;
+    return true;
+  }
+  return false;
 }
 
 async function removePassword(bytes, nit) {
@@ -83,43 +95,63 @@ async function writeToFolder(handle, filename, bytes) {
   await writable.close();
 }
 
-async function processPdf({ dataUrl, nit, filename }) {
+async function processPdf({ dataUrl, nit, filename, rename = true }) {
   const original = new Uint8Array(await (await fetch(dataUrl)).arrayBuffer());
   const header = new TextDecoder('latin1').decode(original.subarray(0, 1024));
   if (!header.includes('%PDF')) {
     return { ok: false, error: 'El archivo recibido no es un PDF.' };
   }
 
-  const wasEncrypted = looksEncrypted(original);
+  let wasEncrypted = looksEncrypted(original);
   let finalBytes = original;
   let finalName = filename;
   let decrypted = false;
   let warning = null;
 
-  try {
-    const result = await removePassword(original, nit);
-    if (result.ok) {
-      finalBytes = result.bytes;
-      decrypted = true;
-    } else {
-      warning = result.error;
+  // Rendimiento: qpdf solo se ejecuta si el PDF realmente está cifrado
+  if (wasEncrypted) {
+    try {
+      const result = await removePassword(original, nit);
+      if (result.ok) {
+        finalBytes = result.bytes;
+        decrypted = true;
+      } else {
+        warning = result.error;
+      }
+    } catch (err) {
+      warning = `Error al quitar la contraseña: ${err.message}`;
     }
-  } catch (err) {
-    warning = `Error al quitar la contraseña: ${err.message}`;
-  }
-
-  if (!decrypted && wasEncrypted) {
-    // Se guarda el original pero marcado, para que no pase desapercibido.
-    finalName = filename.replace(/\.pdf$/i, '') + '_PROTEGIDO.pdf';
   }
 
   // Leer el contenido del PDF (copia: pdf.js transfiere el buffer al worker y lo deja vacío)
+  const parse = (bytes, pw) => parseInvoicePdf(pdfjsLib, bytes.slice(), pw, getPdfWorker());
   let extracted = null;
   try {
-    extracted = await parseInvoicePdf(pdfjsLib, finalBytes.slice(), decrypted ? undefined : String(nit || '').trim());
-    delete extracted.fields;
+    extracted = await parse(finalBytes, wasEncrypted && !decrypted ? String(nit || '').trim() : undefined);
   } catch (err) {
-    extracted = { header: { observaciones: `No se pudo leer el contenido del PDF: ${err.message}` }, products: [] };
+    // Respaldo: el PDF pedía contraseña aunque no se detectó "/Encrypt" → descifrar y leer de nuevo
+    if (/password/i.test(`${err.name} ${err.message}`) && !decrypted) {
+      wasEncrypted = true;
+      const result = await removePassword(original, nit).catch((e) => ({ ok: false, error: e.message }));
+      if (result.ok) {
+        finalBytes = result.bytes;
+        decrypted = true;
+        extracted = await parse(finalBytes).catch(() => null);
+      } else warning = result.error;
+    }
+    if (!extracted) extracted = { kind: 'factura', header: { observaciones: `No se pudo leer el contenido del PDF: ${err.message}` }, products: [] };
+  }
+  delete extracted.fields;
+  const stillEncrypted = wasEncrypted && !decrypted;
+
+  // Nombre descriptivo: TIPO_AAAAMMDD_NUMERO_RCPTR_NIT_NOMBRE_EMSR_NIT_NOMBRE.pdf (si se pudo leer)
+  if (rename) {
+    const nice = buildDocFileName(extracted);
+    if (nice) finalName = nice;
+  }
+  if (stillEncrypted) {
+    // Se guarda el original pero marcado, para que no pase desapercibido.
+    finalName = finalName.replace(/\.pdf$/i, '') + '_PROTEGIDO.pdf';
   }
 
   const saved = await saveBytes(finalName, finalBytes, 'application/pdf');
@@ -143,8 +175,8 @@ async function saveBytes(name, bytes, mime) {
   return { savedIn: 'fallback', folderProblem, dataUrl: await bytesToDataUrl(bytes, mime) };
 }
 
-async function buildAndSaveReport({ records, filename }) {
-  const bytes = buildReport(records || []);
+async function buildAndSaveReport({ records, queue, filename }) {
+  const bytes = buildReport(records || [], queue || []);
   const saved = await saveBytes(filename, bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   return { ok: true, filename, ...saved };
 }
