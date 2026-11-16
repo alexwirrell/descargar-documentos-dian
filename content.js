@@ -1,14 +1,23 @@
 // ===================== Content script (páginas de la DIAN) =====================
-const MAX_SEARCH_ATTEMPTS = 3;
+const MAX_SEARCH_ATTEMPTS = 2; // la 2.ª cubre un captcha fallido; más intentos no cambian la respuesta del portal
+const POLL_MS = 300;               // revisión del captcha / contenido (antes 800 ms)
+const CHALLENGE_TIMEOUT_MS = 90000; // espera máxima a que se resuelva la verificación anti-bot
 
 function sendLog(msg) {
   console.log(`[CONTENT_SCRIPT] ${msg}`);
   return chrome.runtime.sendMessage({ type: 'LOG', message: msg }).catch(() => {});
 }
 
+// status: 'ok' | 'fail' (definitivo) | 'retry' (temporal: se reintenta el mismo CUFE)
 function finishCufe(status, reason) {
   return chrome.runtime.sendMessage({ action: 'CUFE_DONE', status, reason }).catch(() => {});
 }
+
+function reportBlocked(detail) {
+  return chrome.runtime.sendMessage({ action: 'BLOCKED', detail }).catch(() => {});
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
@@ -19,6 +28,25 @@ function blobToDataURL(blob) {
   });
 }
 
+// ---------- Bloqueo / verificación anti-bot del portal ----------
+const BLOCK_RE = /the request is blocked|request (was|has been) blocked|access denied|acceso denegado|too many requests|demasiadas solicitudes|error 1015|you have been blocked/i;
+const CHALLENGE_RE = /just a moment|un momento|comprobando que no sea? un bot|verifying you are human|verify you are human|checking (if the site connection is secure|your browser)|attention required/i;
+
+function blockState() {
+  const title = document.title || '';
+  const text = (document.body?.innerText || '').slice(0, 4000);
+  if (BLOCK_RE.test(title) || BLOCK_RE.test(text)) return 'blocked';
+  if (!document.querySelector('#DocumentKey') && (CHALLENGE_RE.test(title) || CHALLENGE_RE.test(text))) return 'challenge';
+  return null;
+}
+
+function blockDetail() {
+  const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+  const ref = text.match(/\b\d{8}T\d{6}Z-[\w-]+/);
+  return `${text.substring(0, 80)}${ref ? ` · ref ${ref[0]}` : ''}`;
+}
+
+// ---------- Captcha Turnstile de los formularios ----------
 function getTurnstileValue() {
   for (const input of document.querySelectorAll('input[name="cf-turnstile-response"]')) {
     if (input.value) return input.value;
@@ -26,23 +54,21 @@ function getTurnstileValue() {
   return '';
 }
 
-// Espera a que el captcha Turnstile tenga token. Se cancela si el usuario detiene el proceso.
-function waitForCaptcha() {
-  return new Promise((resolve) => {
-    const timer = setInterval(async () => {
-      const token = getTurnstileValue();
-      if (token) {
-        clearInterval(timer);
-        resolve(token);
-        return;
-      }
-      const { isProcessing } = await chrome.storage.local.get('isProcessing');
-      if (!isProcessing) {
-        clearInterval(timer);
-        resolve(null);
-      }
-    }, 800);
-  });
+// Espera el token del captcha. Se cancela si el usuario detiene el proceso.
+async function waitForCaptcha() {
+  const start = Date.now();
+  let reminded = false;
+  for (;;) {
+    const token = getTurnstileValue();
+    if (token) return token;
+    const { isProcessing } = await chrome.storage.local.get('isProcessing');
+    if (!isProcessing) return null;
+    if (!reminded && Date.now() - start > 120000) {
+      reminded = true;
+      await sendLog('El captcha lleva más de 2 minutos sin resolverse: revise la pestaña de la DIAN.');
+    }
+    await sleep(POLL_MS);
+  }
 }
 
 function setInputValue(input, value) {
@@ -52,8 +78,11 @@ function setInputValue(input, value) {
 }
 
 function visibleErrorText() {
-  const el = document.querySelector('.alert-danger, .validation-summary-errors, .field-validation-error, .text-danger');
-  const text = el?.innerText?.trim();
+  // Mensajes en el formulario y también en ventanas emergentes (modal / alerta / toast) del portal
+  const selectors = '.alert-danger, .alert-warning, .validation-summary-errors, .field-validation-error, .text-danger, ' +
+    '.modal.show .modal-body, .modal.in .modal-body, #confirmModal-message, #alertModal .modal-body, .swal2-html-container, .toast-message, .toast-body';
+  const el = [...document.querySelectorAll(selectors)].find((e) => e.offsetParent !== null && e.innerText && e.innerText.trim());
+  const text = el?.innerText?.trim().replace(/\s+/g, ' ');
   return text ? text.substring(0, 200) : '';
 }
 
@@ -68,8 +97,18 @@ async function handleSearchPage(data) {
   const errorText = visibleErrorText();
   if (attempts > 1 && errorText) await sendLog(`La DIAN respondió: ${errorText}`);
 
+  // Respuesta definitiva del portal (documento inexistente / no corresponde al NIT): no insistir
+  if (attempts > 1 && /no (se )?(encontr|hall)|no existe|no corresponde|no es v[aá]lid|no pertenece/i.test(errorText)) {
+    await finishCufe('fail', `La DIAN respondió: ${errorText}`);
+    return;
+  }
   if (attempts > MAX_SEARCH_ATTEMPTS) {
-    await finishCufe('fail', errorText || `documento no encontrado tras ${MAX_SEARCH_ATTEMPTS} intentos`);
+    const diag = describePage();
+    await sendLog(`Diagnóstico: ${diag}`);
+    await finishCufe('fail', errorText ? `La DIAN respondió: ${errorText}`
+      : 'La consulta pública de la DIAN no devolvió ningún documento para este CUFE. Suele pasar con los ' +
+        '"Application Response" (eventos como acuse de recibo o aceptación), que no tienen representación gráfica, ' +
+        `o cuando el NIT no es el del emisor ni el del receptor · ${diag}`);
     return;
   }
 
@@ -81,7 +120,7 @@ async function handleSearchPage(data) {
   const searchBtn = document.querySelector('.search-document');
 
   if (!docKeyInput || !nitInput) {
-    await finishCufe('fail', 'no se encontró el formulario de búsqueda');
+    await finishCufe('retry', 'no se encontró el formulario de búsqueda');
     return;
   }
 
@@ -96,53 +135,85 @@ async function handleSearchPage(data) {
   setTimeout(() => {
     if (searchBtn) searchBtn.click();
     else if (searchForm) searchForm.submit();
-  }, 500);
+  }, 150);
 }
 
 // --- RUTA 2: Descarga del documento ---
-async function handleDocumentPage(data) {
+// La DIAN usa varias variantes de esta página, por ejemplo:
+//   - Factura: <form action="/Document/DownloadPDF"> con trackId, token, captcha
+//   - Documento soporte y otros: <form action="/Document/PrintSupportDocument"> con cune, token, captcha
+// Se usa el formulario del botón "Descargar PDF" (o el que apunte a una descarga/impresión)
+// y se envía a su propia dirección con todos sus campos.
+const DOWNLOAD_TEXT_RE = /descargar\s*(el\s*)?(pdf|documento|representaci)|imprimir|download\s*pdf/i;
+
+function findDownloadControl() {
+  return document.querySelector('a.downloadLink') ||
+    [...document.querySelectorAll('a, button, input[type="submit"], input[type="button"]')]
+      .find((a) => DOWNLOAD_TEXT_RE.test(a.innerText || a.value || ''));
+}
+
+function findDownloadForm() {
+  const isSearch = (f) => f.querySelector('#DocumentKey') || /SearchDocument/i.test(f.getAttribute('action') || '');
+  const fromControl = findDownloadControl()?.closest('form');
+  if (fromControl && !isSearch(fromControl) && !/ShowDocumentToPublic/i.test(fromControl.getAttribute('action') || '')) return fromControl;
+  const forms = [...document.forms].filter((f) => !isSearch(f));
+  return forms.find((f) => /download|print|pdf/i.test(f.getAttribute('action') || '')) ||
+    forms.find((f) => f.querySelector('input[name="token"]') && !/ShowDocumentToPublic/i.test(f.getAttribute('action') || '')) ||
+    null;
+}
+
+async function handleDocumentPage() {
   await sendLog('Página del documento cargada. Obteniendo PDF...');
 
-  const trackId = document.querySelector('input[name="trackId"]')?.value;
-  const token = document.querySelector('input[name="token"]')?.value;
-  const verificationToken = document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+  const form = findDownloadForm();
+  const pdfLink = document.querySelector('a[href*="DownloadPDF" i], a[href*="PrintSupport" i], a[href$=".pdf" i]')?.href;
 
-  const pdfLink = document.querySelector('a[href*="DownloadPDF" i]')?.href;
-
-  if (!(trackId && token) && !pdfLink) {
-    await sendLog(`Diagnóstico: ${describePage()}`);
-    await finishCufe('fail', 'no se encontraron los identificadores del documento en la página');
+  if (!form && !pdfLink) {
+    const diag = describePage();
+    await sendLog(`Diagnóstico: ${diag}`);
+    await finishCufe('fail', `la página del documento no tiene formulario de descarga de PDF · ${diag}`);
     return;
   }
 
   try {
     let response;
-    if (trackId && token) {
-      const hasCaptcha = document.querySelector('.cf-turnstile, input[name="cf-turnstile-response"]');
-      const captchaToken = hasCaptcha ? await waitForCaptcha() : '';
-      if (hasCaptcha && !captchaToken) return; // proceso detenido
-      await sendLog('Solicitando PDF...');
+    if (form) {
+      const action = form.getAttribute('action') || '/Document/DownloadPDF';
+      const needsCaptcha = form.querySelector('input[name="captcha"]') ||
+        document.querySelector('.cf-turnstile, input[name="cf-turnstile-response"]');
+      const captchaToken = needsCaptcha ? await waitForCaptcha() : '';
+      if (needsCaptcha && !captchaToken) return; // proceso detenido
 
-      const formData = new FormData();
-      formData.append('__RequestVerificationToken', verificationToken || '');
-      formData.append('trackId', trackId);
-      formData.append('token', token);
-      formData.append('captcha', captchaToken || '');
-      response = await fetch('/Document/DownloadPDF', { method: 'POST', body: formData });
+      const formData = new FormData(form); // incluye __RequestVerificationToken, trackId/cune, token...
+      if (form.querySelector('input[name="captcha"]')) formData.set('captcha', captchaToken);
+      if (!formData.get('__RequestVerificationToken')) {
+        const vt = document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+        if (vt) formData.set('__RequestVerificationToken', vt);
+      }
+      await sendLog(`Solicitando PDF (${action})...`);
+      response = await fetch(action, { method: (form.getAttribute('method') || 'POST').toUpperCase(), body: formData });
     } else {
       await sendLog('Descargando PDF desde el enlace de la página...');
       response = await fetch(pdfLink);
     }
 
+    if (response.status === 403 || response.status === 429) {
+      await reportBlocked(`HTTP ${response.status} al pedir el PDF`);
+      return;
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const blob = await response.blob();
-    const head = await blob.slice(0, 1024).text();
+    const head = await blob.slice(0, 2048).text();
     if (!head.includes('%PDF')) {
-      throw new Error('el servidor no devolvió un PDF (posible captcha vencido o sesión expirada)');
+      if (BLOCK_RE.test(head)) { await reportBlocked('el portal bloqueó la descarga del PDF'); return; }
+      const ctype = response.headers.get('content-type') || '?';
+      const snippet = head.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 150);
+      throw new Error(`el servidor no devolvió un PDF (tipo ${ctype}): "${snippet}"`);
     }
 
-    await sendLog(`PDF recibido (${Math.round(blob.size / 1024)} KB). Quitando contraseña y guardando...`);
+    await sendLog(`PDF recibido (${Math.round(blob.size / 1024)} KB). Leyendo y guardando...`);
     const dataUrl = await blobToDataURL(blob);
 
     // Esperamos a que el PDF quede guardado antes de pasar al siguiente CUFE.
@@ -151,7 +222,7 @@ async function handleDocumentPage(data) {
 
     await finishCufe('ok');
   } catch (err) {
-    await finishCufe('fail', err.message);
+    await finishCufe('retry', err.message); // temporal: el service worker decide si reintenta
   }
 }
 
@@ -164,45 +235,68 @@ async function init() {
   const data = await chrome.storage.local.get(['isProcessing', 'currentCufe', 'nit', 'currentIndex', 'searchAttempts']);
   if (!data.isProcessing || !data.currentCufe) return;
 
-  // La búsqueda se envía por POST a /User/SearchDocument, así que la página del
-  // documento puede llegar con esa MISMA URL. Por eso se decide por el contenido.
+  // 1) ¿El portal bloqueó la solicitud o está verificando que no seamos un bot?
+  let bs = blockState();
+  if (bs === 'challenge') {
+    await sendLog('El portal está verificando el navegador ("no sea un bot"). Esperando a que termine (resuélvalo si se lo pide)...');
+    const start = Date.now();
+    while (bs === 'challenge' && Date.now() - start < CHALLENGE_TIMEOUT_MS) {
+      await sleep(1000);
+      bs = blockState(); // si la verificación termina, la página navega y este script se vuelve a cargar
+    }
+    if (bs === 'challenge') bs = 'blocked';
+  }
+  if (bs === 'blocked') {
+    await reportBlocked(blockDetail());
+    return;
+  }
+
+  // 2) La búsqueda se envía por POST a /User/SearchDocument, así que la página del
+  //    documento puede llegar con esa MISMA URL. Por eso se decide por el contenido.
   const kind = await detectPageKind();
-  if (kind === 'document') await handleDocumentPage(data);
+  if (kind === 'document') await handleDocumentPage();
   else if (kind === 'search') await handleSearchPage(data);
+  else if (blockState()) await reportBlocked(blockDetail());
   else {
-    await sendLog(`Página no reconocida. Diagnóstico: ${describePage()}`);
-    await finishCufe('fail', 'la DIAN devolvió una página no reconocida (ver diagnóstico arriba)');
+    const diag = describePage();
+    await sendLog(`Página no reconocida. Diagnóstico: ${diag}`);
+    await finishCufe('retry', `página no reconocida · ${diag}`);
   }
 }
 
 function pageKindNow() {
-  if (document.querySelector('input[name="trackId"]') && document.querySelector('input[name="token"]')) return 'document';
-  if (document.querySelector('a[href*="DownloadPDF" i], form[action*="DownloadPDF" i]')) return 'document';
+  // Algunas páginas de resultado también traen el cuadro de búsqueda: si hay formulario de descarga, es el documento
+  if (findDownloadForm()) return 'document';
   if (document.querySelector('#DocumentKey')) return 'search';
+  if (findDownloadControl()) return 'document';
+  if (document.querySelector('a[href*="DownloadPDF" i], form[action*="DownloadPDF" i]')) return 'document';
   return null;
 }
 
-// Espera hasta 10 s por si parte del contenido se carga con JavaScript.
+// Espera hasta ~6 s por si parte del contenido se carga con JavaScript.
 async function detectPageKind() {
   for (let i = 0; i < 20; i++) {
     const kind = pageKindNow();
     if (kind) return kind;
-    await new Promise((r) => setTimeout(r, 500));
+    await sleep(POLL_MS);
   }
+  // Página de detalle del documento sin botón de descarga (p. ej. un tipo sin representación gráfica)
+  if (/ShowDocumentToPublic/i.test(location.pathname) || /detalles? del documento/i.test(document.title)) return 'document';
   return null;
 }
 
+// Diagnóstico compacto para el log y la hoja "Descargas" del Excel
 function describePage() {
   const txt = (el) => (el.innerText || el.value || '').trim().replace(/\s+/g, ' ').substring(0, 60);
-  const forms = [...document.forms].map((f) => `${f.method}:${f.getAttribute('action')}`).join(' | ');
-  const inputs = [...document.querySelectorAll('input[name]')].map((i) => i.name).join(',');
-  const links = [...document.querySelectorAll('a, button')]
-    .filter((a) => /pdf|descarg|download/i.test(txt(a) + (a.getAttribute('href') || '')))
-    .map((a) => `"${txt(a)}"→${a.getAttribute('href') || a.getAttribute('onclick') || ''}`)
-    .join(' | ');
-  const heads = [...document.querySelectorAll('h1,h2,h3')].map(txt).filter(Boolean).slice(0, 4).join(' / ');
-  return `URL=${location.pathname} | Título="${document.title}" | Encabezados=${heads} | Error="${visibleErrorText()}" | ` +
-    `Forms=${forms} | Inputs=${inputs} | Enlaces PDF=${links || '(ninguno)'}`;
+  const forms = [...document.forms].map((f) =>
+    `${(f.method || 'get').toUpperCase()} ${f.getAttribute('action') || '(sin action)'} [${[...f.querySelectorAll('input[name], select[name]')].map((i) => i.name).join(',')}]`
+  ).join(' | ');
+  const ctrl = findDownloadControl();
+  const ctrlHtml = ctrl ? ctrl.outerHTML.replace(/\s+/g, ' ').substring(0, 200) : '(ninguno)';
+  const heads = [...document.querySelectorAll('h1,h2,h3,h4')].map(txt).filter(Boolean).slice(0, 4).join(' / ');
+  const body = (document.querySelector('main, .container, body')?.innerText || '').replace(/\s+/g, ' ').trim().substring(0, 160);
+  return `URL=${location.pathname} | Título="${document.title}" | Encabezados=${heads || '-'} | Error="${visibleErrorText()}" | ` +
+    `Formularios=${forms || '(ninguno)'} | Botón descarga=${ctrlHtml} | Texto="${body}"`;
 }
 
 init();
