@@ -22,7 +22,15 @@
     .report { background-color: #198754; margin-top: 6px; padding: 7px; font-size: 12px; }
     #msg { font-size: 11px; color: #dc3545; min-height: 14px; margin: 6px 0 0; }
     .hint { font-size: 10px; color: #666; margin-top: 3px; }
-    #btnClearLogs { background-color: #6c757d; padding: 4px 8px; font-size: 10px; float: right; width: auto; }
+    .log-tools { float: right; display: flex; gap: 4px; }
+    .log-tools button { padding: 4px 8px; font-size: 10px; width: auto; }
+    #btnClearLogs { background-color: #6c757d; }
+    #btnCopyLogs { background-color: #0056b3; }
+    #btnResume { background-color: #fd7e14; margin-top: 6px; }
+    .options { display: flex; gap: 10px; align-items: center; font-size: 11px; margin-bottom: 10px; }
+    .options label { display: flex; align-items: center; gap: 4px; font-weight: normal; margin: 0; font-size: 11px; }
+    .options input[type="number"] { width: 48px; padding: 3px; font-size: 11px; border: 1px solid #ccc; border-radius: 4px; }
+    #progress { font-size: 11px; color: #333; margin-top: 6px; min-height: 14px; }
     #logs { margin-top: 10px; height: 130px; background: #1e1e1e; color: #00ff66; padding: 8px; font-family: monospace; font-size: 10px; overflow-y: auto; border-radius: 4px; clear: both; }
     .log-entry { margin-bottom: 4px; word-break: break-all; }
   </style>
@@ -49,16 +57,23 @@
     <div class="hint" id="cufeCount"></div>
   </div>
 
+  <div class="options">
+    <label title="TIPO_FECHA_NÚMERO_RCPTR_NIT_NOMBRE_EMSR_NIT_NOMBRE.pdf"><input type="checkbox" id="renameFiles" checked> Renombrar PDF con los datos del documento</label>
+    <label title="Segundos de espera entre un documento y el siguiente">Pausa <input type="number" id="pauseSeconds" min="0" max="600" value="0"> s</label>
+  </div>
+
   <div class="actions">
     <button id="btnStart">Iniciar Descargas</button>
     <button id="btnStop" disabled>Detener</button>
   </div>
+  <button id="btnResume" hidden>▶ Reanudar desde donde quedó</button>
+  <div id="progress"></div>
   <div id="msg"></div>
   <button id="btnReport" class="report">📊 Generar Excel de la última descarga</button>
 
   <div style="margin-top: 8px;">
     <span style="font-size: 12px; font-weight: bold;">Consola de Logs:</span>
-    <button id="btnClearLogs">Limpiar</button>
+    <span class="log-tools"><button id="btnCopyLogs">Copiar</button><button id="btnClearLogs">Limpiar</button></span>
   </div>
   <div id="logs"></div>
 
